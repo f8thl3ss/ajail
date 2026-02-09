@@ -18,6 +18,8 @@ pub struct Config {
     #[serde(default)]
     pub allow_docker: bool,
     #[serde(default)]
+    pub allow_dangerous_writes: bool,
+    #[serde(default)]
     pub worktree: bool,
 }
 
@@ -58,6 +60,7 @@ pub struct Options {
     pub allow_gpg_agent: bool,
     pub allow_xdg_runtime: bool,
     pub allow_docker: bool,
+    pub allow_dangerous_writes: bool,
     pub worktree: bool,
 }
 
@@ -67,6 +70,7 @@ pub fn merge_options(cli: &Cli, config: &Config) -> Options {
         allow_gpg_agent: cli.allow_gpg_agent || config.allow_gpg_agent,
         allow_xdg_runtime: cli.allow_xdg_runtime || config.allow_xdg_runtime,
         allow_docker: cli.allow_docker || config.allow_docker,
+        allow_dangerous_writes: cli.allow_dangerous_writes || config.allow_dangerous_writes,
         worktree: cli.worktree || config.worktree,
     }
 }

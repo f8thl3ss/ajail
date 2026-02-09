@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 
 use nix::mount::{MsFlags, mount};
 use nix::sched::{CloneFlags, unshare};
-use nix::unistd::{getgid, getuid};
+use nix::sys::wait::{WaitStatus, waitpid};
+use nix::unistd::{ForkResult, fork, getgid, getuid};
 
 use crate::config::Options;
 
@@ -123,7 +124,7 @@ fn init_namespaces() -> nix::Result<()> {
     let uid = getuid();
     let gid = getgid();
 
-    unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS)?;
+    unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWPID)?;
 
     fs::write("/proc/self/setgroups", "deny").ok();
     fs::write("/proc/self/uid_map", format!("{uid} {uid} 1\n"))
@@ -408,8 +409,113 @@ fn hide_docker_socket(options: &Options) {
     }
 }
 
+/// Known dangerous files that should be read-only inside the sandbox.
+const DANGEROUS_FILES: &[&str] = &[
+    ".bashrc",
+    ".zshrc",
+    ".bash_profile",
+    ".zprofile",
+    ".profile",
+    ".gitconfig",
+    ".gitmodules",
+    ".ripgreprc",
+    ".mcp.json",
+    ".git/config",
+];
+
+/// Known dangerous directories that should be read-only inside the sandbox.
+const DANGEROUS_DIRS: &[&str] = &[
+    ".git/hooks",
+    ".vscode",
+    ".idea",
+    ".zed",
+    ".claude/commands",
+    ".claude/agents",
+];
+
+/// Bind-mount known dangerous files and directories read-only over themselves
+/// to prevent the sandboxed process from modifying them.
+/// Only protects paths that already exist.
+fn protect_dangerous_files(config: &SandboxConfig) -> nix::Result<()> {
+    if config.options.allow_dangerous_writes {
+        return Ok(());
+    }
+
+    let repo = &config.repo_root;
+
+    for name in DANGEROUS_FILES {
+        let path = repo.join(name);
+        if path.exists()
+            && let Err(e) = bind_mount(&path, &path, true)
+        {
+            eprintln!(
+                "ajail: failed to protect {}, leaving writable: {e}",
+                path.display()
+            );
+        }
+    }
+
+    for name in DANGEROUS_DIRS {
+        let path = repo.join(name);
+        if path.is_dir()
+            && let Err(e) = bind_mount(&path, &path, true)
+        {
+            eprintln!(
+                "ajail: failed to protect {}, leaving writable: {e}",
+                path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Mount a fresh /proc for the new PID namespace.
+fn mount_proc() -> nix::Result<()> {
+    mount(
+        Some("proc"),
+        "/proc",
+        Some("proc"),
+        MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+        None::<&str>,
+    )
+}
+
+/// Wait for a child process, returning its exit code. Minimal inline
+/// version to avoid circular dependency with process.rs.
+fn wait_and_exit(pid: nix::unistd::Pid) -> ! {
+    let code = loop {
+        match waitpid(pid, None) {
+            Ok(WaitStatus::Exited(_, code)) => break code,
+            Ok(WaitStatus::Signaled(_, sig, _)) => break 128 + sig as i32,
+            Ok(_) => continue,
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(e) => {
+                eprintln!("waitpid error: {e}");
+                break 1;
+            }
+        }
+    };
+    std::process::exit(code);
+}
+
 pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
     init_namespaces()?;
+
+    // CLONE_NEWPID only takes effect for children, so fork here.
+    // The grandchild becomes PID 1 in the new PID namespace.
+    // The middle process waits and exits with the grandchild's status.
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
+            wait_and_exit(child);
+        }
+        Ok(ForkResult::Child) => {
+            // We are PID 1 in the new PID namespace
+        }
+        Err(e) => return Err(e),
+    }
+
+    mount_proc()?;
 
     let (path_dirs_outside, path_dirs_under_home) = collect_home_path_dirs(&config.home);
 
@@ -417,6 +523,7 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
     isolate_tmp(config, &locs)?;
     mount_agent_sockets(&config.options)?;
     hide_docker_socket(&config.options);
+    protect_dangerous_files(config)?;
 
     Ok(())
 }

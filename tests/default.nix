@@ -18,4 +18,7 @@ in
   docker-socket-allow = (import ./docker-socket.nix args).allow;
   docker-socket-deny = (import ./docker-socket.nix args).deny;
   path-readonly = import ./path-readonly.nix args;
+  dangerous-files-deny = (import ./dangerous-files.nix args).deny;
+  dangerous-files-allow = (import ./dangerous-files.nix args).allow;
+  pid-namespace = import ./pid-namespace.nix args;
 }

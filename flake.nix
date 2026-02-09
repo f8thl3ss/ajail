@@ -57,6 +57,9 @@
           docker-socket-allow
           docker-socket-deny
           path-readonly
+          dangerous-files-deny
+          dangerous-files-allow
+          pid-namespace
           ;
       };
 

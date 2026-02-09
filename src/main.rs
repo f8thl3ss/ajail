@@ -65,6 +65,10 @@ pub struct Cli {
     #[arg(long, default_value = "prompt")]
     pub worktree_action: WorktreeAction,
 
+    /// Allow writing to dangerous files (.bashrc, .gitconfig, .git/hooks, etc.)
+    #[arg(long)]
+    pub allow_dangerous_writes: bool,
+
     /// Pass --dangerously-skip-permissions to Claude
     #[arg(long)]
     pub dangerously_skip_permissions: bool,
