@@ -20,6 +20,8 @@ pub struct Config {
     #[serde(default)]
     pub allow_dangerous_writes: bool,
     #[serde(default)]
+    pub allow_unix_sockets: bool,
+    #[serde(default)]
     pub worktree: bool,
 }
 
@@ -61,6 +63,7 @@ pub struct Options {
     pub allow_xdg_runtime: bool,
     pub allow_docker: bool,
     pub allow_dangerous_writes: bool,
+    pub allow_unix_sockets: bool,
     pub worktree: bool,
 }
 
@@ -71,6 +74,7 @@ pub fn merge_options(cli: &Cli, config: &Config) -> Options {
         allow_xdg_runtime: cli.allow_xdg_runtime || config.allow_xdg_runtime,
         allow_docker: cli.allow_docker || config.allow_docker,
         allow_dangerous_writes: cli.allow_dangerous_writes || config.allow_dangerous_writes,
+        allow_unix_sockets: cli.allow_unix_sockets || config.allow_unix_sockets,
         worktree: cli.worktree || config.worktree,
     }
 }

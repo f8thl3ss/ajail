@@ -10,6 +10,7 @@ dependencies = [
  "getrandom",
  "git2",
  "hex",
+ "libc",
  "nix",
  "serde",
  "serde_json",

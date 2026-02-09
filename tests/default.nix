@@ -21,4 +21,8 @@ in
   dangerous-files-deny = (import ./dangerous-files.nix args).deny;
   dangerous-files-allow = (import ./dangerous-files.nix args).allow;
   pid-namespace = import ./pid-namespace.nix args;
+  unix-sockets-allow = (import ./unix-sockets.nix args).allow;
+  unix-sockets-deny = (import ./unix-sockets.nix args).deny;
+  unix-sockets-aarch64-allow = (import ./unix-sockets-aarch64.nix args).allow;
+  unix-sockets-aarch64-deny = (import ./unix-sockets-aarch64.nix args).deny;
 }
