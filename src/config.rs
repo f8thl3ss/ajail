@@ -16,6 +16,8 @@ pub struct Config {
     #[serde(default)]
     pub allow_xdg_runtime: bool,
     #[serde(default)]
+    pub allow_docker: bool,
+    #[serde(default)]
     pub worktree: bool,
 }
 
@@ -55,6 +57,7 @@ pub struct Options {
     pub allow_ssh_agent: bool,
     pub allow_gpg_agent: bool,
     pub allow_xdg_runtime: bool,
+    pub allow_docker: bool,
     pub worktree: bool,
 }
 
@@ -63,6 +66,7 @@ pub fn merge_options(cli: &Cli, config: &Config) -> Options {
         allow_ssh_agent: cli.allow_ssh_agent || config.allow_ssh_agent,
         allow_gpg_agent: cli.allow_gpg_agent || config.allow_gpg_agent,
         allow_xdg_runtime: cli.allow_xdg_runtime || config.allow_xdg_runtime,
+        allow_docker: cli.allow_docker || config.allow_docker,
         worktree: cli.worktree || config.worktree,
     }
 }

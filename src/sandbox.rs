@@ -156,13 +156,19 @@ fn collect_home_path_dirs(home: &Path) -> (Vec<(PathBuf, PathBuf)>, Vec<PathBuf>
             continue;
         }
         if !p.exists() {
-            eprintln!("ajail: PATH dir under home does not exist, skipping: {}", p.display());
+            eprintln!(
+                "ajail: PATH dir under home does not exist, skipping: {}",
+                p.display()
+            );
             continue;
         }
         let real = match fs::canonicalize(&p) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("ajail: PATH dir under home cannot be resolved, skipping: {}: {e}", p.display());
+                eprintln!(
+                    "ajail: PATH dir under home cannot be resolved, skipping: {}: {e}",
+                    p.display()
+                );
                 continue;
             }
         };
@@ -170,7 +176,11 @@ fn collect_home_path_dirs(home: &Path) -> (Vec<(PathBuf, PathBuf)>, Vec<PathBuf>
             eprintln!("ajail: preserving PATH dir (under home): {}", p.display());
             under_home.push(p);
         } else {
-            eprintln!("ajail: preserving PATH dir (symlink to {}): {}", real.display(), p.display());
+            eprintln!(
+                "ajail: preserving PATH dir (symlink to {}): {}",
+                real.display(),
+                p.display()
+            );
             outside.push((p, real));
         }
     }
@@ -380,6 +390,24 @@ fn mount_agent_sockets(options: &Options) -> nix::Result<()> {
     Ok(())
 }
 
+/// Hide the Docker daemon socket by bind-mounting /dev/null over it.
+/// Best-effort: if the mount fails (e.g. EPERM in user namespace on a
+/// root-owned filesystem), log a warning and continue.
+fn hide_docker_socket(options: &Options) {
+    if options.allow_docker {
+        return;
+    }
+    let sock = Path::new("/var/run/docker.sock");
+    if sock.exists()
+        && let Err(e) = bind_mount(Path::new("/dev/null"), sock, false)
+    {
+        eprintln!(
+            "ajail: failed to hide Docker socket at {}, it may remain accessible: {e}",
+            sock.display()
+        );
+    }
+}
+
 pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
     init_namespaces()?;
 
@@ -388,6 +416,7 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
     let locs = isolate_home(config, &path_dirs_outside, &path_dirs_under_home)?;
     isolate_tmp(config, &locs)?;
     mount_agent_sockets(&config.options)?;
+    hide_docker_socket(&config.options);
 
     Ok(())
 }

@@ -45,6 +45,10 @@ pub struct Cli {
     #[arg(long)]
     pub allow_gpg_agent: bool,
 
+    /// Allow access to the Docker daemon socket
+    #[arg(long)]
+    pub allow_docker: bool,
+
     /// Allow full XDG runtime directory access
     #[arg(long)]
     pub allow_xdg_runtime: bool,

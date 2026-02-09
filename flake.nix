@@ -54,6 +54,9 @@
           home-claude
           outside-home
           nix-profile
+          docker-socket-allow
+          docker-socket-deny
+          path-readonly
           ;
       };
 
