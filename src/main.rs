@@ -1,6 +1,7 @@
 mod config;
 mod process;
 mod sandbox;
+mod seccomp;
 mod util;
 mod worktree;
 
@@ -69,9 +70,17 @@ pub struct Cli {
     #[arg(long)]
     pub allow_dangerous_writes: bool,
 
+    /// Allow creating Unix domain sockets (blocked by default via seccomp)
+    #[arg(long)]
+    pub allow_unix_sockets: bool,
+
     /// Pass --dangerously-skip-permissions to Claude
     #[arg(long)]
     pub dangerously_skip_permissions: bool,
+
+    /// Extra arguments to pass to the claude command (after --)
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub claude_args: Vec<String>,
 }
 
 // =============================================================================

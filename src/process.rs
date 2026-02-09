@@ -7,6 +7,7 @@ use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::{Pid, chdir, execve};
 
 use crate::sandbox::{self, SandboxConfig};
+use crate::seccomp;
 use crate::worktree::{
     WorktreeInfo, cleanup_worktree, merge_worktree, prompt_worktree_action, show_worktree_diff,
     worktree_has_changes,
@@ -22,6 +23,13 @@ pub fn run_child(
 ) -> ! {
     if let Err(e) = sandbox::setup_namespace(sandbox_config) {
         eprintln!("Failed to set up sandbox: {e}");
+        std::process::exit(1);
+    }
+
+    if !sandbox_config.options.allow_unix_sockets
+        && let Err(e) = seccomp::block_unix_sockets()
+    {
+        eprintln!("Failed to install seccomp filter: {e}");
         std::process::exit(1);
     }
 
@@ -51,6 +59,9 @@ pub fn run_child(
     let mut args = vec![CString::new("claude").expect("static string")];
     if cli.dangerously_skip_permissions {
         args.push(CString::new("--dangerously-skip-permissions").expect("static string"));
+    }
+    for arg in &cli.claude_args {
+        args.push(CString::new(arg.as_bytes()).expect("claude arg contains NUL byte"));
     }
     let Err(e) = execve(&cmd, &args, &env_vars);
     eprintln!("Failed to exec claude: {e}");

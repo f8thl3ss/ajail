@@ -60,6 +60,10 @@
           dangerous-files-deny
           dangerous-files-allow
           pid-namespace
+          unix-sockets-allow
+          unix-sockets-deny
+          unix-sockets-aarch64-allow
+          unix-sockets-aarch64-deny
           ;
       };
 
