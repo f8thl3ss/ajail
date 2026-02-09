@@ -23,6 +23,13 @@ pub struct SandboxConfig {
     pub options: Options,
 }
 
+/// Path classification flags computed once in `isolate_home` and
+/// passed to `isolate_tmp` to avoid redundant recalculation.
+struct PathLocations {
+    repo_under_tmp: bool,
+    share_tree_under_tmp: bool,
+}
+
 /// Bind-mount `src` onto `dst`. Creates `dst` if needed.
 /// If `readonly` is true, remounts read-only afterward.
 fn bind_mount(src: &Path, dst: &Path, readonly: bool) -> nix::Result<()> {
@@ -53,6 +60,46 @@ fn bind_mount(src: &Path, dst: &Path, readonly: bool) -> nix::Result<()> {
             MsFlags::MS_BIND | MsFlags::MS_REC | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY,
             None::<&str>,
         )?;
+    }
+
+    Ok(())
+}
+
+/// Bind-mount `src` onto `dst`, attempting read-only. If the read-only
+/// remount fails (e.g. EPERM on already-readonly source in a user namespace),
+/// the mount remains read-write.
+fn bind_mount_prefer_readonly(src: &Path, dst: &Path) -> nix::Result<()> {
+    if !dst.exists() {
+        if src.is_dir() {
+            fs::create_dir_all(dst).ok();
+        } else {
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent).ok();
+            }
+            fs::write(dst, b"").ok();
+        }
+    }
+
+    mount(
+        Some(src),
+        dst,
+        None::<&str>,
+        MsFlags::MS_BIND | MsFlags::MS_REC,
+        None::<&str>,
+    )?;
+
+    // Best-effort read-only remount
+    if let Err(e) = mount(
+        None::<&str>,
+        dst,
+        None::<&str>,
+        MsFlags::MS_BIND | MsFlags::MS_REC | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY,
+        None::<&str>,
+    ) {
+        eprintln!(
+            "ajail: read-only remount failed for {}, leaving read-write: {e}",
+            dst.display()
+        );
     }
 
     Ok(())
@@ -105,16 +152,25 @@ fn collect_home_path_dirs(home: &Path) -> (Vec<(PathBuf, PathBuf)>, Vec<PathBuf>
     let path_var = env::var_os("PATH").unwrap_or_default();
 
     for p in env::split_paths(&path_var) {
-        if !p.starts_with(home) || !p.exists() {
+        if !p.starts_with(home) {
+            continue;
+        }
+        if !p.exists() {
+            eprintln!("ajail: PATH dir under home does not exist, skipping: {}", p.display());
             continue;
         }
         let real = match fs::canonicalize(&p) {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("ajail: PATH dir under home cannot be resolved, skipping: {}: {e}", p.display());
+                continue;
+            }
         };
         if real.starts_with(home) {
+            eprintln!("ajail: preserving PATH dir (under home): {}", p.display());
             under_home.push(p);
         } else {
+            eprintln!("ajail: preserving PATH dir (symlink to {}): {}", real.display(), p.display());
             outside.push((p, real));
         }
     }
@@ -131,7 +187,7 @@ fn isolate_home(
     config: &SandboxConfig,
     path_dirs_outside: &[(PathBuf, PathBuf)],
     path_dirs_under_home: &[PathBuf],
-) -> nix::Result<()> {
+) -> nix::Result<PathLocations> {
     let staging = Path::new("/tmp/.ajail-staging");
     fs::create_dir_all(staging).ok();
     mount_tmpfs(staging)?;
@@ -214,14 +270,14 @@ fn isolate_home(
         bind_mount(&stage_claude_json, &config.home.join(".claude.json"), false)?;
     }
 
-    // Restore $PATH directories under $HOME.
-    // Use read-write mounts: sources may already be on a read-only filesystem
-    // (e.g. /nix/store), and remounting read-only in a user namespace can EPERM.
+    // Restore $PATH directories under $HOME, preferring read-only.
+    // Sources on a read-only filesystem (e.g. /nix/store) can EPERM on
+    // the read-only remount in a user namespace; fall back to read-write.
     for (original, real) in path_dirs_outside {
-        bind_mount(real, original, false)?;
+        bind_mount_prefer_readonly(real, original)?;
     }
     for (original, stage) in &path_dirs_staged {
-        bind_mount(stage, original, false)?;
+        bind_mount_prefer_readonly(stage, original)?;
     }
 
     if need_share_tree && share_tree_under_home {
@@ -244,47 +300,44 @@ fn isolate_home(
         }
     }
 
-    Ok(())
+    Ok(PathLocations {
+        repo_under_tmp,
+        share_tree_under_tmp,
+    })
 }
 
 /// Overlay /tmp with tmpfs. If the repo or share_tree live under /tmp,
 /// stage them to $HOME first, overlay, then restore.
-fn isolate_tmp(config: &SandboxConfig) -> nix::Result<()> {
+fn isolate_tmp(config: &SandboxConfig, locs: &PathLocations) -> nix::Result<()> {
     let tmp_path = Path::new("/tmp");
-    let repo_under_home = config.repo_root.starts_with(&config.home);
-    let repo_under_tmp = !repo_under_home && config.repo_root.starts_with(tmp_path);
-    let need_share_tree = config.share_tree != config.repo_root;
-    let share_tree_under_home = need_share_tree && config.share_tree.starts_with(&config.home);
-    let share_tree_under_tmp =
-        need_share_tree && !share_tree_under_home && config.share_tree.starts_with(tmp_path);
 
-    if repo_under_tmp || share_tree_under_tmp {
+    if locs.repo_under_tmp || locs.share_tree_under_tmp {
         let staging2 = config.home.join(".ajail-staging");
         fs::create_dir_all(&staging2).ok();
         let stage2_repo = staging2.join("repo");
         let stage2_share_tree = staging2.join("share-tree");
 
-        if repo_under_tmp {
+        if locs.repo_under_tmp {
             bind_mount(&config.repo_root, &stage2_repo, false)?;
         }
-        if share_tree_under_tmp {
+        if locs.share_tree_under_tmp {
             bind_mount(&config.share_tree, &stage2_share_tree, true)?;
         }
 
         mount_tmpfs(tmp_path)?;
 
-        if share_tree_under_tmp {
+        if locs.share_tree_under_tmp {
             bind_mount(&stage2_share_tree, &config.share_tree, true)?;
         }
-        if repo_under_tmp {
+        if locs.repo_under_tmp {
             bind_mount(&stage2_repo, &config.repo_root, false)?;
         }
 
         // Clean up staging
-        if repo_under_tmp {
+        if locs.repo_under_tmp {
             nix::mount::umount(&stage2_repo).ok();
         }
-        if share_tree_under_tmp {
+        if locs.share_tree_under_tmp {
             nix::mount::umount(&stage2_share_tree).ok();
         }
         fs::remove_dir_all(&staging2).ok();
@@ -332,8 +385,8 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
 
     let (path_dirs_outside, path_dirs_under_home) = collect_home_path_dirs(&config.home);
 
-    isolate_home(config, &path_dirs_outside, &path_dirs_under_home)?;
-    isolate_tmp(config)?;
+    let locs = isolate_home(config, &path_dirs_outside, &path_dirs_under_home)?;
+    isolate_tmp(config, &locs)?;
     mount_agent_sockets(&config.options)?;
 
     Ok(())
