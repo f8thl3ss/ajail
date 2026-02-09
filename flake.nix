@@ -53,6 +53,7 @@
           claude-binary
           home-claude
           outside-home
+          nix-profile
           ;
       };
 

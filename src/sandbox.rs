@@ -20,8 +20,6 @@ pub struct SandboxConfig {
     /// When using worktrees, the original repo's .git dir must be accessible
     /// so the worktree's .git file can reference it.
     pub original_git_dir: Option<PathBuf>,
-    /// Resolved absolute path to the claude binary (resolved before fork)
-    pub claude_path: PathBuf,
     pub options: Options,
 }
 
@@ -72,35 +70,68 @@ fn mount_tmpfs(dst: &Path) -> nix::Result<()> {
     )
 }
 
-pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
+/// Create new user and mount namespaces, write UID/GID mappings,
+/// and make all mounts private.
+fn init_namespaces() -> nix::Result<()> {
     let uid = getuid();
     let gid = getgid();
 
-    // Create new user and mount namespaces
     unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS)?;
 
-    // Write UID/GID mappings
-    // First deny setgroups (required before writing gid_map as unprivileged user)
     fs::write("/proc/self/setgroups", "deny").ok();
     fs::write("/proc/self/uid_map", format!("{uid} {uid} 1\n"))
         .map_err(|e| nix::errno::Errno::from_raw(e.raw_os_error().unwrap_or(1)))?;
     fs::write("/proc/self/gid_map", format!("{gid} {gid} 1\n"))
         .map_err(|e| nix::errno::Errno::from_raw(e.raw_os_error().unwrap_or(1)))?;
 
-    // Make all mounts private so our changes don't propagate
     mount(
         None::<&str>,
         "/",
         None::<&str>,
         MsFlags::MS_SLAVE | MsFlags::MS_REC,
         None::<&str>,
-    )?;
+    )
+}
 
-    // Paths under $HOME will become inaccessible after we overlay it with tmpfs.
-    // Strategy: bind-mount them to a staging area first, overlay $HOME, then
-    // bind-mount from the staging area to the final destinations.
+/// Collect $PATH directories under $HOME that need preserving.
+///
+/// Returns two lists:
+/// - `outside`: (original_path, real_path) for symlinks under $HOME that resolve outside it
+///   (e.g. nix profile -> /nix/store). These can be bind-mounted directly after the overlay.
+/// - `under_home`: original paths for real directories under $HOME that need staging.
+fn collect_home_path_dirs(home: &Path) -> (Vec<(PathBuf, PathBuf)>, Vec<PathBuf>) {
+    let mut outside: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut under_home: Vec<PathBuf> = Vec::new();
+    let path_var = env::var_os("PATH").unwrap_or_default();
 
-    // Phase 1: Stage paths under $HOME to /tmp/.ajail-staging (survives $HOME overlay)
+    for p in env::split_paths(&path_var) {
+        if !p.starts_with(home) || !p.exists() {
+            continue;
+        }
+        let real = match fs::canonicalize(&p) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if real.starts_with(home) {
+            under_home.push(p);
+        } else {
+            outside.push((p, real));
+        }
+    }
+
+    (outside, under_home)
+}
+
+/// Stage paths under $HOME to a tmpfs, overlay $HOME with tmpfs,
+/// then restore the staged paths into the new home.
+///
+/// - `path_dirs_outside`: symlinks under $HOME resolving outside (original, real).
+/// - `path_dirs_under_home`: real directories under $HOME that need staging.
+fn isolate_home(
+    config: &SandboxConfig,
+    path_dirs_outside: &[(PathBuf, PathBuf)],
+    path_dirs_under_home: &[PathBuf],
+) -> nix::Result<()> {
     let staging = Path::new("/tmp/.ajail-staging");
     fs::create_dir_all(staging).ok();
     mount_tmpfs(staging)?;
@@ -110,7 +141,6 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
     let stage_repo = staging.join("repo");
     let stage_share_tree = staging.join("share-tree");
     let stage_git_dir = staging.join("git-dir");
-    let stage_claude_bin = staging.join("claude-bin");
 
     let tmp_path = Path::new("/tmp");
 
@@ -122,7 +152,6 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
     let share_tree_under_home = need_share_tree && config.share_tree.starts_with(&config.home);
     let share_tree_under_tmp =
         need_share_tree && !share_tree_under_home && config.share_tree.starts_with(tmp_path);
-    let claude_bin_under_home = config.claude_path.starts_with(&config.home);
     let git_dir_under_home = config
         .original_git_dir
         .as_ref()
@@ -156,12 +185,19 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
         )?;
     }
 
-    if claude_bin_under_home {
-        bind_mount(&config.claude_path, &stage_claude_bin, true)?;
-    }
-
     if share_tree_under_home {
         bind_mount(&config.share_tree, &stage_share_tree, true)?;
+    }
+
+    // Build staging paths for PATH dirs under $HOME
+    let path_dirs_staged: Vec<(&PathBuf, PathBuf)> = path_dirs_under_home
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p, staging.join(format!("path-{i}"))))
+        .collect();
+
+    for (original, stage) in &path_dirs_staged {
+        bind_mount(original, stage, true)?;
     }
 
     // Mount tmpfs over $HOME to hide real home
@@ -178,8 +214,14 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
         bind_mount(&stage_claude_json, &config.home.join(".claude.json"), false)?;
     }
 
-    if claude_bin_under_home {
-        bind_mount(&stage_claude_bin, &config.claude_path, true)?;
+    // Restore $PATH directories under $HOME.
+    // Use read-write mounts: sources may already be on a read-only filesystem
+    // (e.g. /nix/store), and remounting read-only in a user namespace can EPERM.
+    for (original, real) in path_dirs_outside {
+        bind_mount(real, original, false)?;
+    }
+    for (original, stage) in &path_dirs_staged {
+        bind_mount(stage, original, false)?;
     }
 
     if need_share_tree && share_tree_under_home {
@@ -202,8 +244,20 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
         }
     }
 
-    // Phase 2: Stage paths under /tmp to $HOME/.ajail-staging (survives /tmp overlay)
-    // $HOME is now a tmpfs we control, so we can create dirs there.
+    Ok(())
+}
+
+/// Overlay /tmp with tmpfs. If the repo or share_tree live under /tmp,
+/// stage them to $HOME first, overlay, then restore.
+fn isolate_tmp(config: &SandboxConfig) -> nix::Result<()> {
+    let tmp_path = Path::new("/tmp");
+    let repo_under_home = config.repo_root.starts_with(&config.home);
+    let repo_under_tmp = !repo_under_home && config.repo_root.starts_with(tmp_path);
+    let need_share_tree = config.share_tree != config.repo_root;
+    let share_tree_under_home = need_share_tree && config.share_tree.starts_with(&config.home);
+    let share_tree_under_tmp =
+        need_share_tree && !share_tree_under_home && config.share_tree.starts_with(tmp_path);
+
     if repo_under_tmp || share_tree_under_tmp {
         let staging2 = config.home.join(".ajail-staging");
         fs::create_dir_all(&staging2).ok();
@@ -226,7 +280,7 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
             bind_mount(&stage2_repo, &config.repo_root, false)?;
         }
 
-        // Clean up staging2
+        // Clean up staging
         if repo_under_tmp {
             nix::mount::umount(&stage2_repo).ok();
         }
@@ -238,17 +292,22 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
         mount_tmpfs(tmp_path)?;
     }
 
-    // Optional: agent socket access
+    Ok(())
+}
+
+/// Bind-mount agent sockets (SSH, GPG) or the full XDG runtime directory.
+fn mount_agent_sockets(options: &Options) -> nix::Result<()> {
+    let uid = getuid();
     let xdg_runtime_dir = env::var("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(format!("/run/user/{uid}")));
 
-    if config.options.allow_xdg_runtime {
+    if options.allow_xdg_runtime {
         if xdg_runtime_dir.is_dir() {
             bind_mount(&xdg_runtime_dir, &xdg_runtime_dir, true)?;
         }
     } else {
-        if config.options.allow_ssh_agent
+        if options.allow_ssh_agent
             && let Ok(sock) = env::var("SSH_AUTH_SOCK")
         {
             let sock = PathBuf::from(sock);
@@ -257,13 +316,25 @@ pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
             }
         }
 
-        if config.options.allow_gpg_agent {
+        if options.allow_gpg_agent {
             let gpg_dir = xdg_runtime_dir.join("gnupg");
             if gpg_dir.is_dir() {
                 bind_mount(&gpg_dir, &gpg_dir, false)?;
             }
         }
     }
+
+    Ok(())
+}
+
+pub fn setup_namespace(config: &SandboxConfig) -> nix::Result<()> {
+    init_namespaces()?;
+
+    let (path_dirs_outside, path_dirs_under_home) = collect_home_path_dirs(&config.home);
+
+    isolate_home(config, &path_dirs_outside, &path_dirs_under_home)?;
+    isolate_tmp(config)?;
+    mount_agent_sockets(&config.options)?;
 
     Ok(())
 }

@@ -10,10 +10,12 @@ in
 unfree-pkgs.testers.nixosTest {
   name = "ajail-claude-binary";
 
-  nodes.machine = { ... }: {
-    imports = [ common.machineConfig ];
-    environment.systemPackages = [ unfree-pkgs.claude-code ];
-  };
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ common.machineConfig ];
+      environment.systemPackages = [ unfree-pkgs.claude-code ];
+    };
 
   testScript = ''
     machine.wait_for_unit("multi-user.target")

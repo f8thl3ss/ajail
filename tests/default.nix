@@ -14,4 +14,5 @@ in
   claude-binary = import ./claude-binary.nix args;
   home-claude = import ./home-claude.nix args;
   outside-home = import ./outside-home.nix args;
+  nix-profile = import ./nix-profile.nix args;
 }

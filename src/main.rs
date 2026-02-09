@@ -170,7 +170,6 @@ fn main() -> ExitCode {
         repo_root: sandbox_repo_root,
         project_dir: sandbox_project_dir,
         original_git_dir,
-        claude_path: claude_path.clone(),
         options,
     };
 

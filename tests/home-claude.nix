@@ -16,7 +16,8 @@ pkgs.testers.nixosTest {
         assert_ok "claude runs inside sandbox" true
       '';
     in
-    common.setup + ''
+    common.setup
+    + ''
       # Install mock claude under ~/.local/bin (simulating a home-dir install)
       machine.succeed("su - testuser -c 'mkdir -p ~/.local/bin'")
       machine.succeed("su - testuser -c 'cp ${mockClaude}/bin/claude ~/.local/bin/claude'")
