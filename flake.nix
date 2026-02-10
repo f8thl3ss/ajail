@@ -51,6 +51,7 @@
           ssh-agent-allow
           ssh-agent-deny
           claude-binary
+          custom-command
           home-claude
           outside-home
           nix-profile

@@ -12,6 +12,7 @@ in
   ssh-agent-allow = (import ./ssh-agent.nix args).allow;
   ssh-agent-deny = (import ./ssh-agent.nix args).deny;
   claude-binary = import ./claude-binary.nix args;
+  custom-command = import ./custom-command.nix args;
   home-claude = import ./home-claude.nix args;
   outside-home = import ./outside-home.nix args;
   nix-profile = import ./nix-profile.nix args;

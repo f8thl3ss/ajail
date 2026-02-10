@@ -15,6 +15,57 @@
       };
     };
 
+  # Helper: wrap a test script into a named mock binary
+  mkMockCommand =
+    name: script:
+    pkgs.writeShellScriptBin name ''
+      FAIL=0
+
+      assert_denied() {
+        local desc="$1"; shift
+        if "$@" 2>/dev/null; then
+          echo "FAIL: $desc"
+          FAIL=1
+        else
+          echo "OK: $desc"
+        fi
+      }
+
+      assert_ok() {
+        local desc="$1"; shift
+        if "$@" 2>/dev/null; then
+          echo "OK: $desc"
+        else
+          echo "FAIL: $desc"
+          FAIL=1
+        fi
+      }
+
+      assert_exists() {
+        local desc="$1" path="$2"
+        if [ -e "$path" ]; then
+          echo "OK: $desc"
+        else
+          echo "FAIL: $desc"
+          FAIL=1
+        fi
+      }
+
+      assert_not_exists() {
+        local desc="$1" path="$2"
+        if [ -e "$path" ]; then
+          echo "FAIL: $desc"
+          FAIL=1
+        else
+          echo "OK: $desc"
+        fi
+      }
+
+      ${script}
+
+      exit $FAIL
+    '';
+
   # Helper: wrap a test script into a mock claude binary
   mkMockClaude =
     script:

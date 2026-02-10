@@ -117,7 +117,7 @@ pub fn show_worktree_diff(info: &WorktreeInfo) {
 pub fn prompt_worktree_action() -> WorktreeAction {
     use std::io::{BufRead, Write};
 
-    // Read from /dev/tty for interactive input (terminal may have been used by claude)
+    // Read from /dev/tty for interactive input (terminal may have been used by the sandboxed process)
     let tty = match fs::OpenOptions::new()
         .read(true)
         .write(true)

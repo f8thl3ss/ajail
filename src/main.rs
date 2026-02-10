@@ -34,7 +34,7 @@ pub enum WorktreeAction {
     Prompt,
 }
 
-/// Run Claude Code in a Linux namespace sandbox
+/// Run a command in a Linux namespace sandbox
 #[derive(Parser)]
 #[command(name = "ajail", version, about)]
 pub struct Cli {
@@ -58,7 +58,7 @@ pub struct Cli {
     #[arg(long, env = "CLAUDE_CONFIG_DIR")]
     pub claude_config_dir: Option<PathBuf>,
 
-    /// Run Claude in an isolated git worktree
+    /// Run in an isolated git worktree
     #[arg(long)]
     pub worktree: bool,
 
@@ -74,13 +74,17 @@ pub struct Cli {
     #[arg(long)]
     pub allow_unix_sockets: bool,
 
-    /// Pass --dangerously-skip-permissions to Claude
+    /// Command to run inside the sandbox (default: claude)
+    #[arg(long)]
+    pub command: Option<String>,
+
+    /// Pass --dangerously-skip-permissions to the command
     #[arg(long)]
     pub dangerously_skip_permissions: bool,
 
-    /// Extra arguments to pass to the claude command (after --)
+    /// Extra arguments to pass to the command (after --)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub claude_args: Vec<String>,
+    pub extra_args: Vec<String>,
 }
 
 // =============================================================================
@@ -97,8 +101,8 @@ fn main() -> ExitCode {
     let session_id = random_hex(8);
 
     let home = PathBuf::from(env::var("HOME").expect("HOME not set"));
-    let claude_home = env::temp_dir().join(format!("ajail-{session_id}"));
-    fs::create_dir_all(&claude_home).expect("Failed to create temp home");
+    let tmp_home = env::temp_dir().join(format!("ajail-{session_id}"));
+    fs::create_dir_all(&tmp_home).expect("Failed to create temp home");
 
     let claude_config = cli
         .claude_config_dir
@@ -133,7 +137,7 @@ fn main() -> ExitCode {
         home.join(".claude")
     };
 
-    // Worktree: create an isolated worktree for Claude to work in
+    // Worktree: create an isolated worktree to work in
     let worktree_info = if options.worktree {
         match create_worktree(&real_repo_root, &session_id) {
             Ok(info) => {
@@ -168,13 +172,13 @@ fn main() -> ExitCode {
     // .git/worktrees/<name> dir, so we need to make the original .git accessible.
     let original_git_dir = worktree_info.as_ref().map(|_| real_repo_root.join(".git"));
 
-    // Resolve claude path before fork — after namespace setup, $HOME is overlaid
+    // Resolve command path before fork — after namespace setup, $HOME is overlaid
     // with tmpfs and paths under it (like ~/.nix-profile/bin) become invisible.
     // Canonicalize to follow symlinks (e.g. nix profile symlinks to /nix/store).
-    let claude_path = which::which("claude")
+    let command_path = which::which(&options.command)
         .map(|p| fs::canonicalize(&p).unwrap_or(p))
         .unwrap_or_else(|_| {
-            eprintln!("claude not found in PATH");
+            eprintln!("{} not found in PATH", options.command);
             std::process::exit(1);
         });
 
@@ -190,21 +194,21 @@ fn main() -> ExitCode {
         options,
     };
 
-    // Fork: child sets up namespace and execs claude, parent waits
+    // Fork: child sets up namespace and execs command, parent waits
     match unsafe { fork() } {
         Ok(ForkResult::Child) => {
-            run_child(&sandbox_config, &cli, &claude_config_dest, &claude_path);
+            run_child(&sandbox_config, &cli, &claude_config_dest, &command_path);
         }
         Ok(ForkResult::Parent { child }) => {
             let exit_code = wait_for_child(child);
             handle_worktree_cleanup(&worktree_info, &cli.worktree_action);
-            let _ = fs::remove_dir_all(&claude_home);
+            let _ = fs::remove_dir_all(&tmp_home);
             ExitCode::from(exit_code as u8)
         }
         Err(e) => {
             eprintln!("Fork failed: {e}");
             handle_worktree_cleanup(&worktree_info, &cli.worktree_action);
-            let _ = fs::remove_dir_all(&claude_home);
+            let _ = fs::remove_dir_all(&tmp_home);
             ExitCode::FAILURE
         }
     }

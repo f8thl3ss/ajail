@@ -23,6 +23,8 @@ pub struct Config {
     pub allow_unix_sockets: bool,
     #[serde(default)]
     pub worktree: bool,
+    #[serde(default)]
+    pub command: Option<String>,
 }
 
 fn config_path() -> PathBuf {
@@ -65,6 +67,7 @@ pub struct Options {
     pub allow_dangerous_writes: bool,
     pub allow_unix_sockets: bool,
     pub worktree: bool,
+    pub command: String,
 }
 
 pub fn merge_options(cli: &Cli, config: &Config) -> Options {
@@ -76,5 +79,10 @@ pub fn merge_options(cli: &Cli, config: &Config) -> Options {
         allow_dangerous_writes: cli.allow_dangerous_writes || config.allow_dangerous_writes,
         allow_unix_sockets: cli.allow_unix_sockets || config.allow_unix_sockets,
         worktree: cli.worktree || config.worktree,
+        command: cli
+            .command
+            .clone()
+            .or_else(|| config.command.clone())
+            .unwrap_or_else(|| "claude".to_string()),
     }
 }

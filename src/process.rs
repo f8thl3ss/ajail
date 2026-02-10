@@ -14,12 +14,12 @@ use crate::worktree::{
 };
 use crate::{Cli, WorktreeAction};
 
-/// Set up the sandbox namespace and exec claude. Never returns on success.
+/// Set up the sandbox namespace and exec the command. Never returns on success.
 pub fn run_child(
     sandbox_config: &SandboxConfig,
     cli: &Cli,
     claude_config_dest: &Path,
-    claude_path: &Path,
+    command_path: &Path,
 ) -> ! {
     if let Err(e) = sandbox::setup_namespace(sandbox_config) {
         eprintln!("Failed to set up sandbox: {e}");
@@ -55,16 +55,21 @@ pub fn run_child(
         .collect();
 
     let cmd =
-        CString::new(claude_path.as_os_str().as_bytes()).expect("claude path contains NUL byte");
-    let mut args = vec![CString::new("claude").expect("static string")];
+        CString::new(command_path.as_os_str().as_bytes()).expect("command path contains NUL byte");
+    let cmd_name = command_path.file_name().and_then(|n| n.to_str());
+    let Some(cmd_name) = cmd_name else {
+        eprintln!("Could not find binary: {cmd_name:?}");
+        std::process::exit(1);
+    };
+    let mut args = vec![CString::new(cmd_name).expect("command name")];
     if cli.dangerously_skip_permissions {
         args.push(CString::new("--dangerously-skip-permissions").expect("static string"));
     }
-    for arg in &cli.claude_args {
-        args.push(CString::new(arg.as_bytes()).expect("claude arg contains NUL byte"));
+    for arg in &cli.extra_args {
+        args.push(CString::new(arg.as_bytes()).expect("arg contains NUL byte"));
     }
     let Err(e) = execve(&cmd, &args, &env_vars);
-    eprintln!("Failed to exec claude: {e}");
+    eprintln!("Failed to exec {cmd_name}: {e}");
     std::process::exit(1);
 }
 
